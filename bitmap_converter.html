@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DWIN bitmap converter</title>
+<style>
+  :root {
+    --bg: #14181d; --panel: #1c2229; --line: #2f3944; --text: #e4e9ee; --muted: #93a0ad;
+    --accent: #46d9a5; --accent-ink: #06231a;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #eef1f4; --panel: #fff; --line: #cfd7df; --text: #1b2229; --muted: #5d6b78;
+            --accent: #0b7d5a; --accent-ink: #fff; }
+  }
+  * { box-sizing: border-box; }
+  html { height: 100%; }
+  body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); }
+  main { max-width: 1060px; margin: 0 auto; padding: 28px 20px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lede { margin: 0 0 22px; color: var(--muted); max-width: 64ch; }
+  .grid { display: grid; grid-template-columns: 300px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  label:first-child { margin-top: 0; }
+  input[type=number], select { width: 100%; padding: 7px 8px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; margin: 10px 0 0; }
+  input[type=color] { width: 100%; height: 34px; padding: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+  #drop { border: 2px dashed var(--line); border-radius: 6px; padding: 22px 12px; text-align: center; color: var(--muted);
+    cursor: pointer; margin-bottom: 14px; }
+  #drop:hover, #drop.over, #drop:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
+  #stage { min-height: 150px; display: flex; align-items: center; justify-content: center; padding: 14px; border-radius: 4px;
+    background: repeating-conic-gradient(rgba(127,127,127,.12) 0 25%, transparent 0 50%) 0 0 / 16px 16px; overflow: auto; }
+  canvas { image-rendering: pixelated; border: 1px solid var(--line); }
+  .meta { margin: 10px 0 14px; color: var(--muted); font-size: 13px; }
+  .meta.warn { color: #f0b24a; }
+  textarea { width: 100%; height: 230px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 10px; font: 13px/1.45 var(--mono); white-space: pre; }
+  button { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 4px; padding: 8px 16px; font: 600 14px var(--sans); cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 10px; }
+  .bar select { width: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Image to DWIN bitmap</h1>
+  <p class="lede">Turns a JPG or PNG into the two-colour <code>bitmap</code> widget data for the ESPHome DWIN component:
+    one row per line, 8 pixels per byte, leftmost pixel in the top bit. Everything runs in your browser.</p>
+
+  <div class="grid">
+    <section aria-label="Settings">
+      <div id="drop" tabindex="0" role="button">Drop an image here, or click to choose<br><small>JPG, PNG, GIF, WebP</small></div>
+      <input id="file" type="file" accept="image/*" hidden>
+
+      <div class="row">
+        <div><label for="w">Width (px)</label><input id="w" type="number" min="1" max="480" value="32"></div>
+        <div><label for="h">Height (px)</label><input id="h" type="number" min="1" max="272" value="32"></div>
+      </div>
+      <label class="check"><input id="aspect" type="checkbox" checked> Keep aspect ratio</label>
+
+      <label for="thr">Threshold: <span id="thrv">128</span></label>
+      <input id="thr" type="range" min="1" max="254" value="128">
+
+      <label for="dither">Dithering</label>
+      <select id="dither">
+        <option value="none">None (hard threshold)</option>
+        <option value="fs">Floyd-Steinberg</option>
+        <option value="bayer">Ordered (Bayer 4x4)</option>
+      </select>
+      <label class="check"><input id="invert" type="checkbox"> Light pixels are "on" (invert)</label>
+
+      <div class="row">
+        <div><label for="fg">On pixels (color)</label><input id="fg" type="color" value="#ff0000"></div>
+        <div><label for="bgc">Off pixels (bg_color)</label><input id="bgc" type="color" value="#000000"></div>
+      </div>
+    </section>
+
+    <section aria-label="Result">
+      <div id="stage"><span style="color:var(--muted)">Preview appears here</span></div>
+      <div id="meta" class="meta" aria-live="polite"></div>
+      <div class="bar">
+        <select id="fmt" aria-label="Output format">
+          <option value="widget">Full widget</option>
+          <option value="data">Data list only</option>
+        </select>
+        <button id="copy" type="button">Copy YAML</button>
+      </div>
+      <textarea id="out" readonly spellcheck="false" aria-label="YAML output"></textarea>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let img = null;
+
+// ---- core: grey "ink" values (0 = off, 255 = full on) -> packed bytes ---------------------------
+const BAYER = [0,8,2,10, 12,4,14,6, 3,11,1,9, 15,7,13,5];
+
+function toOnBits(ink, w, h, threshold, mode) {
+  const on = new Uint8Array(w * h);
+  if (mode === "fs") {
+    const e = Float32Array.from(ink);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, old = e[i], val = old >= threshold ? 255 : 0, err = old - val;
+      on[i] = val ? 1 : 0;
+      if (x + 1 < w) e[i + 1] += err * 7 / 16;
+      if (y + 1 < h) {
+        if (x > 0) e[i + w - 1] += err * 3 / 16;
+        e[i + w] += err * 5 / 16;
+        if (x + 1 < w) e[i + w + 1] += err / 16;
+      }
+    }
+  } else {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const t = mode === "bayer" ? (BAYER[(y & 3) * 4 + (x & 3)] + 0.5) / 16 * 255 + (threshold - 128) : threshold;
+      on[i] = ink[i] >= t ? 1 : 0;
+    }
+  }
+  return on;
+}
+
+function pack(on, w, h) {
+  const stride = (w + 7) >> 3, bytes = new Uint8Array(stride * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+    if (on[y * w + x]) bytes[y * stride + (x >> 3)] |= 0x80 >> (x & 7);
+  return { bytes, stride };
+}
+
+// ---- UI -------------------------------------------------------------------------------------
+function hex2(n) { return "0x" + n.toString(16).toUpperCase().padStart(2, "0"); }
+function colorStr(v) { return '"' + v.toUpperCase() + '"'; }
+
+function render() {
+  if (!img) return;
+  const w = Math.max(1, Math.min(480, +$("w").value | 0)), h = Math.max(1, Math.min(272, +$("h").value | 0));
+  const invert = $("invert").checked;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.fillStyle = invert ? "#000" : "#fff";            // transparent areas end up "off"
+  g.fillRect(0, 0, w, h);
+  g.drawImage(img, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data, ink = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const lum = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+    ink[i] = invert ? lum : 255 - lum;
+  }
+  const on = toOnBits(ink, w, h, +$("thr").value, $("dither").value);
+  const { bytes, stride } = pack(on, w, h);
+
+  // preview with the chosen colours
+  const fg = $("fg").value, bg = $("bgc").value;
+  const rgb = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16));
+  const [fr, fgc, fb] = rgb(fg), [br, bgg, bb] = rgb(bg);
+  const pv = $("stage").firstElementChild && $("stage").firstElementChild.tagName === "CANVAS" ? $("stage").firstElementChild : document.createElement("canvas");
+  pv.width = w; pv.height = h;
+  const pg = pv.getContext("2d"), out = pg.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const c3 = on[i] ? [fr, fgc, fb] : [br, bgg, bb];
+    out.data.set([c3[0], c3[1], c3[2], 255], i * 4);
+  }
+  pg.putImageData(out, 0, 0);
+  const scale = Math.max(1, Math.min(Math.floor(520 / w), Math.floor(380 / h), 16));
+  pv.style.width = w * scale + "px"; pv.style.height = h * scale + "px";
+  if (pv.parentElement !== $("stage")) { $("stage").textContent = ""; $("stage").appendChild(pv); }
+
+  // YAML
+  const lines = [];
+  for (let y = 0; y < h; y++) {
+    const row = [];
+    for (let b = 0; b < stride; b++) row.push(hex2(bytes[y * stride + b]));
+    lines.push(row.join(", "));
+  }
+  let text;
+  if ($("fmt").value === "data") {
+    text = "data: [\n" + lines.map((l, i) => "  " + l + (i < lines.length - 1 ? "," : "")).join("\n") + "\n]";
+  } else {
+    text = "- bitmap:\n    x: 0\n    y: 0\n    width: " + w + "\n    color: " + colorStr(fg) +
+           "\n    bg_color: " + colorStr(bg) + "\n    data: [\n" +
+           lines.map((l, i) => "      " + l + (i < lines.length - 1 ? "," : "")).join("\n") + "\n    ]";
+  }
+  $("out").value = text;
+  const warn = w > 480 || h > 272;
+  $("meta").className = "meta" + (warn ? " warn" : "");
+  $("meta").textContent = w + " x " + h + " px, " + bytes.length + " bytes (" + stride + " per row)" +
+    (warn ? " - larger than the 480x272 panel" : "") + ". Shown at " + scale + "x.";
+}
+
+function load(file) {
+  if (!file || !file.type.startsWith("image/")) { $("meta").textContent = "That file is not an image. Choose a JPG or PNG."; return; }
+  const url = URL.createObjectURL(file), im = new Image();
+  im.onload = () => {
+    img = im;
+    const w = Math.min(+$("w").value || 32, 480);
+    $("w").value = w;
+    $("h").value = Math.max(1, Math.min(272, Math.round(w * im.naturalHeight / im.naturalWidth)));
+    render();
+  };
+  im.onerror = () => { $("meta").textContent = "Could not read that image."; };
+  im.src = url;
+}
+
+$("drop").addEventListener("click", () => $("file").click());
+$("drop").addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+$("file").addEventListener("change", e => load(e.target.files[0]));
+["dragenter", "dragover"].forEach(t => $("drop").addEventListener(t, e => { e.preventDefault(); $("drop").classList.add("over"); }));
+["dragleave", "drop"].forEach(t => $("drop").addEventListener(t, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
+$("drop").addEventListener("drop", e => load(e.dataTransfer.files[0]));
+document.addEventListener("paste", e => { const f = [...(e.clipboardData?.files || [])][0]; if (f) load(f); });
+
+$("w").addEventListener("input", () => {
+  if (img && $("aspect").checked) $("h").value = Math.max(1, Math.min(272, Math.round($("w").value * img.naturalHeight / img.naturalWidth)));
+  render();
+});
+$("h").addEventListener("input", () => {
+  if (img && $("aspect").checked) $("w").value = Math.max(1, Math.min(480, Math.round($("h").value * img.naturalWidth / img.naturalHeight)));
+  render();
+});
+$("thr").addEventListener("input", () => { $("thrv").textContent = $("thr").value; render(); });
+["dither", "invert", "fg", "bgc", "fmt"].forEach(id => $(id).addEventListener("input", render));
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("out").value); }
+  catch { $("out").select(); document.execCommand("copy"); }
+  $("copy").textContent = "Copied";
+  setTimeout(() => { $("copy").textContent = "Copy YAML"; }, 1400);
+});
+</script>
+</body>
+</html>
